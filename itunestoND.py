@@ -3,19 +3,89 @@
 # itunestoND.py - Transfers song ratings, playcounts and play dates from I-Tunes library
 # to the Navidrome database
 
-import sys, sqlite3, datetime, re, pprint, unicodedata
+import sys, sqlite3, datetime, re, pprint, unicodedata, argparse, os
 from pathlib import Path
 from urllib.parse import unquote
 from bs4 import BeautifulSoup
-from lxml import etree
 
-def get_db_path(dbID):
+def find_files_by_pattern(pattern, search_paths=None):
+    """Find files matching pattern in current directory and common locations"""
+    if search_paths is None:
+        search_paths = [Path.cwd()]
+    
+    found_files = []
+    for search_path in search_paths:
+        if search_path.exists():
+            found_files.extend(search_path.glob(pattern))
+    
+    return [f for f in found_files if f.is_file()]
+
+def auto_detect_itunes_library():
+    """Auto-detect iTunes library file"""
+    search_paths = [
+        Path.cwd(),
+        Path.home() / 'Music' / 'iTunes',
+        Path(os.path.expanduser('~/Music/iTunes')),
+    ]
+    
+    patterns = ['*[Ll]ibrary.xml', 'iTunes Library.xml', 'library.xml']
+    
+    for pattern in patterns:
+        files = find_files_by_pattern(pattern, search_paths)
+        if files:
+            return files
+    return []
+
+def auto_detect_navidrome_db():
+    """Auto-detect Navidrome database file"""
+    search_paths = [
+        Path.cwd(),
+        Path.cwd() / 'data',
+        Path.home() / '.navidrome',
+        Path('/var/lib/navidrome'),
+    ]
+    
+    patterns = ['navidrome.db', '*.db']
+    
+    for pattern in patterns:
+        files = find_files_by_pattern(pattern, search_paths)
+        if files:
+            return files
+    return []
+
+def select_file(files, file_type):
+    """Let user select from multiple found files"""
+    if len(files) == 1:
+        print(f'Found {file_type}: {files[0]}')
+        return files[0]
+    
+    print(f'\nFound multiple {file_type} files:')
+    for i, file in enumerate(files, 1):
+        print(f'{i}. {file}')
+    
     while True:
-        path = Path(input('Enter the path to the %s: ' % dbID))
+        try:
+            choice = int(input(f'Select {file_type} (1-{len(files)}): '))
+            if 1 <= choice <= len(files):
+                return files[choice - 1]
+            print(f'Please enter a number between 1 and {len(files)}')
+        except ValueError:
+            print('Please enter a valid number')
+
+def get_file_path(file_type, auto_detect_func):
+    """Get file path with auto-detection fallback"""
+    files = auto_detect_func()
+    
+    if files:
+        return select_file(files, file_type)
+    
+    # Fallback to manual entry
+    while True:
+        path = Path(input(f'Enter the path to the {file_type}: '))
         if not path.is_file():
-            print(str(path) + ' is not a file. Try again.')
-        else: break
-    return path
+            print(f'{path} is not a file. Try again.')
+        else:
+            return path
 
 def determine_userID(nd_p):
     conn = sqlite3.connect(nd_p)
@@ -55,38 +125,55 @@ def write_to_annotation(dictionary_with_stats, entry_type, conn, cur):
         # cur.executemany('INSERT INTO consumers VALUES (?,?,?,?)', purchases)
         # cur.execute("INSERT INTO consumers VALUES (1,'John Doe','john.doe@xyz.com','A')")
 
-_ = None
-while _ != 'proceed':
+def confirm_migration():
+    """Confirm migration with user"""
     print()
-    print('This script will migrate certain data from your ITunes library to your Navidrome database.', 
-        "Back up all your data in case it doesn't work properly on your setup. NO WARRANTIES. NO PROMISES.", 
-        "The script will DELETE existing data you have in your Navidrome database so it can start \"fresh\".", sep='\n')
+    print('This script will migrate data from your iTunes library to your Navidrome database.')
+    print('WARNING: This will DELETE existing annotation data in your Navidrome database!')
+    print('Make sure you have backed up your data. NO WARRANTIES. NO PROMISES.')
     print()
-
-    _ = input('Type PROCEED to continue, or Q to quit: ').lower()
-
-    if _ == 'q': print('Good bye.'); sys.exit(0)
-
-nddb_path = get_db_path('Navidrome database')
-itdb_path = get_db_path('Itunes database')
-def parse_itunes_xml_streaming(xml_path):
-    """Generator that yields song entries without loading entire XML into memory"""
-    context = etree.iterparse(xml_path, events=('start', 'end'))
     
-    # First pass: get music folder path and count songs
-    print('\nAnalyzing iTunes library structure...')
-    with open(xml_path, 'r', encoding="utf-8") as f:
+    response = input('Continue with migration? [y/N]: ').lower().strip()
+    if response not in ('y', 'yes'):
+        print('Migration cancelled.')
+        sys.exit(0)
+
+def main():
+    parser = argparse.ArgumentParser(description='Migrate iTunes library data to Navidrome')
+    parser.add_argument('--library', type=Path, help='Path to iTunes Library.xml file')
+    parser.add_argument('--database', type=Path, help='Path to Navidrome database file')
+    parser.add_argument('--yes', action='store_true', help='Skip confirmation prompt')
+    
+    args = parser.parse_args()
+    
+    if not args.yes:
+        confirm_migration()
+    
+    # Get file paths
+    if args.library and args.library.is_file():
+        itdb_path = args.library
+    else:
+        itdb_path = get_file_path('iTunes library', auto_detect_itunes_library)
+    
+    if args.database and args.database.is_file():
+        nddb_path = args.database
+    else:
+        nddb_path = get_file_path('Navidrome database', auto_detect_navidrome_db)
+    
+    return itdb_path, nddb_path
+
+if __name__ == '__main__':
+    itdb_path, nddb_path = main()
+
+    print('\nParsing iTunes library. This may take a while.')
+    with open(itdb_path, 'r', encoding="utf-8") as f: 
         soup = BeautifulSoup(f, 'lxml-xml')
-        it_root_music_path = unquote(soup.find('key', text='Music Folder').next_sibling.text)
-        songs = soup.dict.dict.find_all('dict')
-        song_count = len(songs)
-        del(soup)
-    
-    print(f'Found {song_count:,} files in iTunes database to process.')
-    print('Starting optimized streaming parse...')
-    return it_root_music_path, songs, song_count
 
-it_root_music_path, songs, song_count = parse_itunes_xml_streaming(itdb_path)
+    it_root_music_path = unquote(soup.find('key', text='Music Folder').next_sibling.text)
+    songs = soup.dict.dict.find_all('dict')
+    song_count = len(songs)
+    print(f'Found {song_count:,} files in iTunes database to process.')
+    del(soup)
 
 userID = determine_userID(nddb_path)
 songID_correlation = {} # we'll save this for later use to transfer Itunes playlists to ND (another script)

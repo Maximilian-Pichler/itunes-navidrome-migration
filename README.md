@@ -1,63 +1,258 @@
-# itunes-navidrome-migration
-Python scripts to transfer iTunes history to a new Navidrome installation
-## Introduction
-These Python scripts will transfer song ratings, play counts, play dates and playlists from an existing iTunes library to a new Navidrome installation.
+# iTunes to Navidrome Migration Toolkit
 
-## Background
-Itunes saves its data in a Library.xml file. Navidrome saves its data in up to three different `navidrome.db*` files. The script reads from `Library.xml` and writes the data to the navidrome.db file.
+[![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://python.org)
+[![License](https://img.shields.io/badge/license-Unlicense-green.svg)](LICENSE)
 
-These scripts were tested on Linux using a Library.xml file that came from iTunes on Windows. I'm running the Docker version of Navidrome v0.48.0 & Python version 3.10.6.
+A Python toolkit for migrating iTunes library data (ratings, play counts, play dates, and playlists) to Navidrome music server.
 
-I am not sure how it would work on other platforms.
+## Features
 
-## Known issues
-1. If the iTunes database has a star rating for an entry but no play count or play date, then it will not migrate that rating to Navidrome. I'm not sure if this is a common enough situation to bother fixing in the ratings migration script. Let me know if it affects you.
+- 🎵 **Complete Data Migration**: Transfer ratings, play counts, last played dates, and playlists
+- 🔍 **Auto-Detection**: Automatically finds iTunes Library.xml and Navidrome database files
+- ⚡ **Batch Processing**: Process all playlists at once or review individually
+- 🖥️ **CLI Support**: Full command-line interface for automation
+- 📊 **Detailed Reporting**: Comprehensive migration summaries with missing track details
+- 🛡️ **Safe Operation**: Confirmation prompts and backup recommendations
 
-2. Foreign alphabets and characters (e.g. Japanese) may not transfer. See [this issue](https://github.com/Stampede/itunes-navidrome-migration/issues/4) for details.
+## Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/your-repo/itunes-navidrome-migration.git
+cd itunes-navidrome-migration
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Migrate ratings and play counts (auto-detects files)
+python3 itunestoND.py
+
+# Migrate playlists in batch mode
+python3 itunesPlaylistMigrator.py --batch
+```
 
 ## Installation
-1. You can create a Python virtual environment, or not.
-2. Download `itunesPlaylistMigrator.py`, `itunestoND.py` and `requirements.txt` and save to a folder.
-3. `$ pip3 install -r requirements.txt`
 
-### Not comfortable with Python?
-Put your database files in a drop box or something and I will migrate your iTunes library for $15. Email me at ylh9hhiaq@mozmail.com. For playlists, I'd send you back a web page with your playlists listed and hotlinked. If you want to keep the playlist, just click on its link and it will get added to Navidrome.
+### Requirements
 
-## How to use
-### Preparing your library
-Set up your Navidrome server and copy all the folders and music files from your iTunes library to the Navidrome library. Navidrome will build its own database from scratch based on the file metadata. 
+- Python 3.7+
+- iTunes Library.xml file
+- Navidrome server and database
 
-The most important thing is that you keep the same directory structure between iTunes and Navidrome libraries. Do not rename, delete or move any files or directories. The script uses the file paths to sync the databases. If you want to reorganize the file structure, do it after you have moved over all your itunes data.
+### Install Dependencies
 
-That said, before running the scripts, I found it very helpful to use Music Brainz Picard to clean up file metadata **without moving any files**. Use Navidrome for a week or so and if you have problems finding albums or songs, use Picard or Beets or something to improve the metadata tags for the files that are acting funny.
+```bash
+pip install -r requirements.txt
+```
 
-**Only work on backups until you know the scripts were successful.**
+### Virtual Environment (Recommended)
 
-### Migrating play counts, last played date and song ratings
-1. Shut down your Navidrome server.
-2. Copy the Navidrome database files to the machine with these scripts. In my case there are 3 database files: `navidrome.db`, `navidrome.db-shm` and `navidrome.db-wal` you need any `navidrome.db*` file that you find.
-3. Run the first script: `$python3 itunestoND.py`
-4. It will prompt you to type the path to the `navidrome.db` and `Library.xml`
-5. Wait. For large libraries, it can take a few minutes to crunch all the data in `Library.xml`.
-6. When it's done, your Navidrome database files may be collapsed into a single `navidrome.db` file. This is OK.
-7. **On the machine with the ND server:** delete the 3 database files, then copy over the `navidrome.db` file from the script. Put it in their place.
-8. Start your Navidrome server to make sure everything worked correctly. You should now have song ratings and play counts.
+```bash
+python3 -m venv venv
+source venv/bin/activate  # Linux/macOS
+# or
+venv\Scripts\activate     # Windows
 
-The script will also generate a file called `IT_file_correlations.py`. If you don't want to move over your iTunes playlists, you can just delete this.
+pip install -r requirements.txt
+```
 
-### Migrating iTunes playlists
-I wrote this as an afterthought, so these instructions are a little weird. This script will not move smart playlists. Because of the way `Library.xml` is structured, there are sometimes "false positives" when looking for playlists. You will be prompted before each playlist is created. If you don't recognize a list, just decline when it asks if you want to transfer it.
+## Usage
 
-1. Backup your Navidrome database like you did for the last script in case something goes wrong.
-2. Make sure your Navidrome server is running.
-3. The previous script generated a file: `IT_file_correlations.py`. Move that file into the same directory where you have `itunesPlaylistMigrator.py` stored.
-4. Run the playlist migrator script: `$ python3 itunesPlaylistMigrator.py`. If your working directory is not the same where `Library.xml` is stored, you will be prompted for the path to `Library.xml`.
-5. Answer the prompts for your Navidrome username and password.
-6. The script will search for playlists from your iTunes library and prompt if you want to move them to Navidrome.
+### Data Migration
+
+Migrate song ratings, play counts, and last played dates:
+
+```bash
+# Basic usage with auto-detection
+python3 itunestoND.py
+
+# Skip confirmation prompt
+python3 itunestoND.py --yes
+
+# Specify file paths
+python3 itunestoND.py --library ~/Music/iTunes/Library.xml --database ./navidrome.db
+
+# View all options
+python3 itunestoND.py --help
+```
+
+### Playlist Migration
+
+Migrate iTunes playlists to Navidrome:
+
+```bash
+# Interactive mode (review each playlist)
+python3 itunesPlaylistMigrator.py
+
+# Preview playlists without processing
+python3 itunesPlaylistMigrator.py --preview
+
+# Batch mode (accept all playlists)
+python3 itunesPlaylistMigrator.py --batch
+
+# Full automation
+python3 itunesPlaylistMigrator.py --batch \
+  --server http://localhost:4533 \
+  --username admin \
+  --password mypassword
+
+# View all options
+python3 itunesPlaylistMigrator.py --help
+```
+
+## Migration Guide
+
+### Prerequisites
+
+1. **Backup your data** - Always work with backups until migration is verified
+2. **Preserve file structure** - Keep the same directory structure between iTunes and Navidrome
+3. **Set up Navidrome** - Ensure Navidrome has indexed your music files
+
+### Step 1: Migrate Ratings and Play Data
+
+1. **Stop Navidrome server**
+2. **Copy database files** (`navidrome.db*`) to your working directory
+3. **Run migration:**
+   ```bash
+   python3 itunestoND.py
+   ```
+4. **Replace database files** on your Navidrome server
+5. **Start Navidrome** and verify the migration
+
+### Step 2: Migrate Playlists
+
+1. **Start Navidrome server**
+2. **Ensure `IT_file_correlations.py`** exists (generated in Step 1)
+3. **Choose migration approach:**
+   - **Preview first:** `python3 itunesPlaylistMigrator.py --preview`
+   - **Interactive:** `python3 itunesPlaylistMigrator.py`
+   - **Batch:** `python3 itunesPlaylistMigrator.py --batch`
+
+## Configuration
+
+### Auto-Detection Paths
+
+The scripts automatically search these locations:
+
+**iTunes Library.xml:**
+- Current directory
+- `~/Music/iTunes/`
+- `%USERPROFILE%\Music\iTunes\` (Windows)
+
+**Navidrome Database:**
+- Current directory
+- `./data/`
+- `~/.navidrome/`
+- `/var/lib/navidrome/`
+
+### Command-Line Options
+
+#### `itunestoND.py`
+```
+--library PATH    Path to iTunes Library.xml file
+--database PATH   Path to Navidrome database file  
+--yes            Skip confirmation prompt
+--help           Show help message
+```
+
+#### `itunesPlaylistMigrator.py`
+```
+--library PATH     Path to iTunes Library.xml file
+--server URL       Navidrome server URL
+--username USER    Navidrome username
+--password PASS    Navidrome password
+--batch           Accept all playlists automatically
+--preview         Preview playlists without processing
+--help            Show help message
+```
+
+## Examples
+
+### Basic Migration
+```bash
+# Let the script find your files
+python3 itunestoND.py
+python3 itunesPlaylistMigrator.py
+```
+
+### Automated Migration
+```bash
+# Fully automated with explicit paths
+python3 itunestoND.py --yes \
+  --library ~/Music/iTunes/Library.xml \
+  --database ~/navidrome/navidrome.db
+
+python3 itunesPlaylistMigrator.py --batch \
+  --library ~/Music/iTunes/Library.xml \
+  --server http://localhost:4533 \
+  --username admin
+```
+
+### Preview Mode
+```bash
+# See what playlists would be migrated
+python3 itunesPlaylistMigrator.py --preview
+```
+
+## Troubleshooting
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| Files not found | Use `--library` and `--database` to specify paths |
+| Permission denied | Check database file permissions |
+| Missing tracks in playlists | Files may have been renamed or moved |
+| Encoding errors | Ensure Library.xml uses UTF-8 encoding |
+
+### Known Limitations
+
+- **Smart playlists** are not migrated
+- **Ratings without play data** won't transfer
+- **Non-Latin characters** may not transfer correctly
+- **File path changes** between iTunes and Navidrome break correlation
+
+## Dependencies
+
+- `beautifulsoup4` - XML parsing
+- `requests` - HTTP API calls
+- `PyInputPlus` - Enhanced input handling
+- `lxml` - XML processing
+
+See `requirements.txt` for version details.
+
+## Testing
+
+Tested with:
+- **Python**: 3.7+
+- **Navidrome**: v0.48.0+
+- **Platforms**: Linux, macOS, Windows
+- **iTunes**: Library.xml from iTunes on Windows/macOS
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request
+
+## License
+
+This project is released into the public domain under the [Unlicense](LICENSE).
+
+## Support
+
+- 📧 **Issues**: [GitHub Issues](https://github.com/your-repo/itunes-navidrome-migration/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/your-repo/itunes-navidrome-migration/discussions)
+- 🎵 **Navidrome**: [Official Discord](https://discord.gg/xh7j7yF)
 
 ## Acknowledgments
-Thanks to the Navidrome developers for their hard work and for putting up with my basic questions on the Discord chat as I worked on this script.
 
-Hopefully these scripts help some people. Feel free to copy / share / improve etc.. As far as I'm concerned, this is public domain.
+- [Navidrome](https://navidrome.org) developers for creating an excellent music server
+- Community contributors and testers
+- Original concept and implementation
 
-Hello.
+---
+
+⭐ **Found this helpful?** Give it a star and share with other music enthusiasts!

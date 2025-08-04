@@ -5,7 +5,7 @@
 # It will parse the Itunes library XML file and use the Navidrome API to transfer your playlists.
 
 from pathlib import Path
-import sys, requests, urllib.parse, random, re, string, json
+import sys, requests, urllib.parse, random, re, string, json, argparse, os
 from bs4 import BeautifulSoup
 import pyinputplus as pyip
 from hashlib import md5
@@ -52,67 +52,207 @@ def send_api_request(endpoint, **kwargs):
     except KeyError:
         print('Seems that the address you entered does not go to a navidrome server.')
 
-def transfer_playlist_to_nd(itunes_list):
-    pass
-
-login_successful = False
-
-while not login_successful:
-    print()
-    server_url = input('Enter the address to your navidrome server: ')
-    username = input('Enter your Navidrome username: ')
-    password = pyip.inputPassword(prompt='Enter the password to your Navidrome account: ')
-
-    if not server_url.startswith('http'):
-        server_url = 'http://' + server_url
-    if server_url.endswith('/'): server_url = server_url[:-1]
-    server_url += '/rest/'
-    login_successful = send_api_request('ping')
-
-    if login_successful: print('\nConnection to server successful.')
-
-#Parse library File
-it_db_path = Path.cwd() / 'Library.xml'
-while not it_db_path.is_file():
-    print('I did not find a file at %s .' % str(it_db_path))
-    it_db_path = Path(input('Enter the absolute path to the itunes library: '))
-
-print('Using %s for the itunes library.' % str(it_db_path))
-
-print('Loading iTunes playlists...')
-with open(it_db_path, 'r', encoding='utf-8') as f: 
-    soup = BeautifulSoup(f, 'lxml-xml')
-playlists = soup.array.find_all('dict', recursive=False)
-print(f'Found {len(playlists)} playlists to process.')
-
-# Cycle through playlists and choose whether to add them to Navidrome
-
-playlists_to_skip = ('Library', 'Downloaded', 'Music', 'Movies', 'TV Shows', 'Podcasts', 'Audiobooks', 'Tagged', 'Genius')
-for plist in playlists:
-    if plist.find('key', text='Distinguished Kind'): continue # these are special playlists unique to Itunes
+def find_itunes_library():
+    """Auto-detect iTunes library file"""
+    search_paths = [
+        Path.cwd(),
+        Path.home() / 'Music' / 'iTunes',
+        Path(os.path.expanduser('~/Music/iTunes')),
+    ]
     
-    playlist_name = plist.find('key', text='Name').find_next('string').text
-    if playlist_name in playlists_to_skip: continue
-    if plist.find('key', text='Smart Info'): continue
+    patterns = ['*[Ll]ibrary.xml', 'iTunes Library.xml', 'library.xml']
     
-    try:
-        playlist_tracks = plist.array.find_all('dict')
-    except AttributeError:
-        continue
+    for search_path in search_paths:
+        if search_path.exists():
+            for pattern in patterns:
+                files = list(search_path.glob(pattern))
+                if files:
+                    return files
+    return []
 
-    print(f'\nA playlist named {playlist_name} contains {len(playlist_tracks)} tracks.')
-    should_we_keep_playlist = pyip.inputYesNo(prompt='Do you want to move it to Navidrome? ')
-    if should_we_keep_playlist == 'no': continue
+def select_file(files, file_type):
+    """Let user select from multiple found files"""
+    if len(files) == 1:
+        print(f'Found {file_type}: {files[0]}')
+        return files[0]
+    
+    print(f'\nFound multiple {file_type} files:')
+    for i, file in enumerate(files, 1):
+        print(f'{i}. {file}')
+    
+    while True:
+        try:
+            choice = int(input(f'Select {file_type} (1-{len(files)}): '))
+            if 1 <= choice <= len(files):
+                return files[choice - 1]
+            print(f'Please enter a number between 1 and {len(files)}')
+        except ValueError:
+            print('Please enter a valid number')
 
-    create_playlist_reply = send_api_request('createPlaylist', name=playlist_name)
-    if not create_playlist_reply:
-        print('Something went wrong when trying to create the %s playlist.' % playlist_name)
+def get_playlist_processing_mode():
+    """Ask user how they want to process playlists"""
+    print('\nPlaylist processing options:')
+    print('1. Review each playlist individually (default)')
+    print('2. Accept all playlists automatically')
+    print('3. Preview playlists without processing')
+    
+    while True:
+        choice = input('Choose processing mode [1-3] (default: 1): ').strip()
+        if choice == '' or choice == '1':
+            return 'individual'
+        elif choice == '2':
+            return 'accept_all'
+        elif choice == '3':
+            return 'preview'
+        else:
+            print('Please enter 1, 2, or 3')
 
+def setup_server_connection(server_url_arg=None, username_arg=None, password_arg=None):
+    """Setup connection to Navidrome server"""
+    global server_url, username, password
+    
+    login_successful = False
+    while not login_successful:
+        if not server_url_arg:
+            server_url = input('Enter the address to your navidrome server: ')
+        else:
+            server_url = server_url_arg
+            
+        if not username_arg:
+            username = input('Enter your Navidrome username: ')
+        else:
+            username = username_arg
+            
+        if not password_arg:
+            password = pyip.inputPassword(prompt='Enter the password to your Navidrome account: ')
+        else:
+            password = password_arg
+
+        if not server_url.startswith('http'):
+            server_url = 'http://' + server_url
+        if server_url.endswith('/'):
+            server_url = server_url[:-1]
+        server_url += '/rest/'
+        
+        login_successful = send_api_request('ping')
+        if login_successful:
+            print('\nConnection to server successful.')
+            return True
+        else:
+            # Reset for retry if using args
+            if server_url_arg or username_arg or password_arg:
+                print('Connection failed with provided credentials.')
+                return False
+            server_url_arg = username_arg = password_arg = None
+
+def get_library_file(library_path=None):
+    """Get iTunes library file with auto-detection"""
+    if library_path and library_path.is_file():
+        print(f'Using provided library: {library_path}')
+        return library_path
+    
+    # Try auto-detection
+    files = find_itunes_library()
+    if files:
+        return select_file(files, 'iTunes library')
+    
+    # Fallback to manual entry
+    it_db_path = Path.cwd() / 'Library.xml'
+    while not it_db_path.is_file():
+        print(f'I did not find a file at {it_db_path}')
+        it_db_path = Path(input('Enter the absolute path to the iTunes library: '))
+    
+    print(f'Using {it_db_path} for the iTunes library.')
+    return it_db_path
+
+def main():
+    parser = argparse.ArgumentParser(description='Migrate iTunes playlists to Navidrome')
+    parser.add_argument('--library', type=Path, help='Path to iTunes Library.xml file')
+    parser.add_argument('--server', help='Navidrome server URL')
+    parser.add_argument('--username', help='Navidrome username')
+    parser.add_argument('--password', help='Navidrome password')
+    parser.add_argument('--batch', action='store_true', help='Accept all playlists without prompts')
+    parser.add_argument('--preview', action='store_true', help='Preview playlists without processing')
+    
+    args = parser.parse_args()
+    
+    # Setup server connection
+    if not setup_server_connection(args.server, args.username, args.password):
+        sys.exit(1)
+    
+    # Get library file
+    it_db_path = get_library_file(args.library)
+    
+    print('Loading iTunes playlists...')
+    with open(it_db_path, 'r', encoding='utf-8') as f: 
+        soup = BeautifulSoup(f, 'lxml-xml')
+    playlists = soup.array.find_all('dict', recursive=False)
+    print(f'Found {len(playlists)} playlists to process.')
+    
+    # Determine processing mode
+    if args.preview:
+        processing_mode = 'preview'
+    elif args.batch:
+        processing_mode = 'accept_all'
     else:
+        processing_mode = get_playlist_processing_mode()
+    
+    # Process playlists
+    process_playlists(playlists, processing_mode)
+
+def process_playlists(playlists, processing_mode):
+    """Process playlists based on selected mode"""
+    playlists_to_skip = ('Library', 'Downloaded', 'Music', 'Movies', 'TV Shows', 'Podcasts', 'Audiobooks', 'Tagged', 'Genius')
+    
+    # Collect all missing tracks for summary
+    all_missing_tracks = {}
+    processed_playlists = []
+    skipped_playlists = []
+    
+    # First pass: collect playlist info
+    valid_playlists = []
+    for plist in playlists:
+        if plist.find('key', text='Distinguished Kind'): continue
+        
+        playlist_name = plist.find('key', text='Name').find_next('string').text
+        if playlist_name in playlists_to_skip: continue
+        if plist.find('key', text='Smart Info'): continue
+        
+        try:
+            playlist_tracks = plist.array.find_all('dict')
+            if playlist_tracks:
+                valid_playlists.append((playlist_name, playlist_tracks))
+        except AttributeError:
+            continue
+    
+    if processing_mode == 'preview':
+        print('\nPlaylist Preview:')
+        for playlist_name, tracks in valid_playlists:
+            print(f'  {playlist_name}: {len(tracks)} tracks')
+        print(f'\nTotal: {len(valid_playlists)} playlists found')
+        return
+    
+    # Process playlists
+    for playlist_name, playlist_tracks in valid_playlists:
+        if processing_mode == 'individual':
+            print(f'\nPlaylist "{playlist_name}" contains {len(playlist_tracks)} tracks.')
+            should_process = pyip.inputYesNo(prompt='Do you want to move it to Navidrome? ')
+            if should_process == 'no':
+                skipped_playlists.append(playlist_name)
+                continue
+        elif processing_mode == 'accept_all':
+            print(f'Processing playlist "{playlist_name}" ({len(playlist_tracks)} tracks)...')
+        
+        # Create playlist
+        create_playlist_reply = send_api_request('createPlaylist', name=playlist_name)
+        if not create_playlist_reply:
+            print(f'Failed to create playlist "{playlist_name}"')
+            continue
+        
         ND_playlist_id = create_playlist_reply['playlist']['id']
         it_track_ids = [int(track.integer.text) for track in playlist_tracks]
         
-        # Build list of Navidrome track IDs, skipping missing correlations
+        # Build list of Navidrome track IDs
         ND_track_ids = []
         missing_tracks = []
         for it_id in it_track_ids:
@@ -121,17 +261,15 @@ for plist in playlists:
             else:
                 missing_tracks.append(it_id)
         
-        # Report missing tracks to user
+        # Store missing tracks for summary
         if missing_tracks:
-            print(f'Warning: {len(missing_tracks)} tracks in playlist "{playlist_name}" could not be found in Navidrome:')
-            print(f'Missing iTunes track IDs: {missing_tracks[:10]}{"..." if len(missing_tracks) > 10 else ""}')
-            print(f'These tracks were likely skipped during the initial migration.')
+            all_missing_tracks[playlist_name] = missing_tracks
         
         if not ND_track_ids:
-            print(f'No tracks from playlist "{playlist_name}" could be migrated. Skipping playlist.')
+            print(f'No tracks from playlist "{playlist_name}" could be migrated. Skipping.')
             continue
-
-        # Add tracks in batches to avoid API limits
+        
+        # Add tracks in batches
         batch_size = 100
         for i in range(0, len(ND_track_ids), batch_size):
             batch = ND_track_ids[i:i + batch_size]
@@ -140,7 +278,53 @@ for plist in playlists:
                 print(f'Failed to add batch {i//batch_size + 1} to playlist "{playlist_name}"')
                 break
         
-        print(f'Successfully added {len(ND_track_ids)} tracks to playlist "{playlist_name}"')
+        processed_playlists.append((playlist_name, len(ND_track_ids), len(missing_tracks)))
+        print(f'Added {len(ND_track_ids)} tracks to "{playlist_name}"')
+    
+    # Print summary
+    print_summary(processed_playlists, skipped_playlists, all_missing_tracks)
+
+def print_summary(processed_playlists, skipped_playlists, all_missing_tracks):
+    """Print migration summary"""
+    print('\n' + '='*60)
+    print('MIGRATION SUMMARY')
+    print('='*60)
+    
+    if processed_playlists:
+        print(f'\nProcessed {len(processed_playlists)} playlists:')
+        total_tracks = sum(tracks for _, tracks, _ in processed_playlists)
+        total_missing = sum(missing for _, _, missing in processed_playlists)
+        
+        for name, tracks, missing in processed_playlists:
+            status = f'{tracks} tracks'
+            if missing:
+                status += f' ({missing} missing)'
+            print(f'  ✓ {name}: {status}')
+        
+        print(f'\nTotal tracks migrated: {total_tracks}')
+        if total_missing:
+            print(f'Total tracks missing: {total_missing}')
+    
+    if skipped_playlists:
+        print(f'\nSkipped {len(skipped_playlists)} playlists:')
+        for name in skipped_playlists:
+            print(f'  - {name}')
+    
+    if all_missing_tracks:
+        print(f'\nMISSING TRACKS DETAILS:')
+        for playlist_name, missing_ids in all_missing_tracks.items():
+            print(f'\n  {playlist_name} ({len(missing_ids)} missing):')
+            for track_id in missing_ids[:5]:  # Show first 5
+                print(f'    iTunes ID: {track_id}')
+            if len(missing_ids) > 5:
+                print(f'    ... and {len(missing_ids) - 5} more')
+        print('\nNote: Missing tracks were likely skipped during the initial migration.')
+    
+    print('\nMigration complete!')
+
+if __name__ == '__main__':
+    main()
+# This code is now handled in the process_playlists function
 
 
 
