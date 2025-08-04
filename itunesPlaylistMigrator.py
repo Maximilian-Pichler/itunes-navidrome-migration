@@ -79,8 +79,11 @@ while not it_db_path.is_file():
 
 print('Using %s for the itunes library.' % str(it_db_path))
 
-with open(it_db_path, 'r') as f: soup = BeautifulSoup(f, 'lxml-xml')
+print('Loading iTunes playlists...')
+with open(it_db_path, 'r', encoding='utf-8') as f: 
+    soup = BeautifulSoup(f, 'lxml-xml')
 playlists = soup.array.find_all('dict', recursive=False)
+print(f'Found {len(playlists)} playlists to process.')
 
 # Cycle through playlists and choose whether to add them to Navidrome
 
@@ -108,9 +111,36 @@ for plist in playlists:
     else:
         ND_playlist_id = create_playlist_reply['playlist']['id']
         it_track_ids = [int(track.integer.text) for track in playlist_tracks]
-        ND_track_ids = [itunes_correlations[x] for x in it_track_ids]
+        
+        # Build list of Navidrome track IDs, skipping missing correlations
+        ND_track_ids = []
+        missing_tracks = []
+        for it_id in it_track_ids:
+            if it_id in itunes_correlations:
+                ND_track_ids.append(itunes_correlations[it_id])
+            else:
+                missing_tracks.append(it_id)
+        
+        # Report missing tracks to user
+        if missing_tracks:
+            print(f'Warning: {len(missing_tracks)} tracks in playlist "{playlist_name}" could not be found in Navidrome:')
+            print(f'Missing iTunes track IDs: {missing_tracks[:10]}{"..." if len(missing_tracks) > 10 else ""}')
+            print(f'These tracks were likely skipped during the initial migration.')
+        
+        if not ND_track_ids:
+            print(f'No tracks from playlist "{playlist_name}" could be migrated. Skipping playlist.')
+            continue
 
-        add_tracks_reply = send_api_request('updatePlaylist', playlistId=ND_playlist_id, songIdToAdd=ND_track_ids)
+        # Add tracks in batches to avoid API limits
+        batch_size = 100
+        for i in range(0, len(ND_track_ids), batch_size):
+            batch = ND_track_ids[i:i + batch_size]
+            add_tracks_reply = send_api_request('updatePlaylist', playlistId=ND_playlist_id, songIdToAdd=batch)
+            if not add_tracks_reply:
+                print(f'Failed to add batch {i//batch_size + 1} to playlist "{playlist_name}"')
+                break
+        
+        print(f'Successfully added {len(ND_track_ids)} tracks to playlist "{playlist_name}"')
 
 
 

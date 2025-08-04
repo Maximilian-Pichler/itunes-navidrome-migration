@@ -3,10 +3,11 @@
 # itunestoND.py - Transfers song ratings, playcounts and play dates from I-Tunes library
 # to the Navidrome database
 
-import sys, sqlite3, datetime, re, string, pprint, random
+import sys, sqlite3, datetime, re, pprint, unicodedata
 from pathlib import Path
 from urllib.parse import unquote
 from bs4 import BeautifulSoup
+from lxml import etree
 
 def get_db_path(dbID):
     while True:
@@ -37,30 +38,20 @@ def update_playstats(d1, id, playcount, playdate, rating=0):
 
     if playdate > d1[id]['play date']: d1[id].update({'play date': playdate})
 
-def generate_annotation_id(): # random hex number 32 characters long
-    character_pool = string.hexdigits[:16]
-
-    id_elements = []
-    for char_count in (8, 4, 4, 4, 12):
-        id_elements.append(''.join(random.choice(character_pool) for i in range(char_count)))
-    return '-'.join(id_elements)
-
-def write_to_annotation(dictionary_with_stats, entry_type):
+def write_to_annotation(dictionary_with_stats, entry_type, conn, cur):
     annotation_entries = []
     for item_id in dictionary_with_stats:
         this_entry = dictionary_with_stats[item_id]
         
         play_count = this_entry['play count']
-        play_date = this_entry['play date'].strftime('%Y-%m-%d %H:%M:%S') # YYYY-MM-DD 24:mm:ss
+        play_date = this_entry['play date'].strftime('%Y-%m-%d %H:%M:%S')
         rating = this_entry['rating']
 
-        annotation_entries.append((generate_annotation_id(), userID, item_id, entry_type, play_count, play_date, rating, 0, None))
+        annotation_entries.append((userID, item_id, entry_type, play_count, play_date, rating, 0, None))
 
-    conn = sqlite3.connect(nddb_path)
-    cur = conn.cursor()
-    cur.executemany('INSERT INTO annotation VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', annotation_entries)
-    conn.commit()
-    conn.close()
+    if annotation_entries:
+        cur.executemany('INSERT INTO annotation VALUES (?, ?, ?, ?, ?, ?, ?, ?)', annotation_entries)
+        conn.commit()
         # cur.executemany('INSERT INTO consumers VALUES (?,?,?,?)', purchases)
         # cur.execute("INSERT INTO consumers VALUES (1,'John Doe','john.doe@xyz.com','A')")
 
@@ -78,17 +69,24 @@ while _ != 'proceed':
 
 nddb_path = get_db_path('Navidrome database')
 itdb_path = get_db_path('Itunes database')
-print('\nParsing Itunes library. This may take a while.')
-with open(itdb_path, 'r', encoding="utf-8") as f: soup = BeautifulSoup(f, 'lxml-xml')
+def parse_itunes_xml_streaming(xml_path):
+    """Generator that yields song entries without loading entire XML into memory"""
+    context = etree.iterparse(xml_path, events=('start', 'end'))
+    
+    # First pass: get music folder path and count songs
+    print('\nAnalyzing iTunes library structure...')
+    with open(xml_path, 'r', encoding="utf-8") as f:
+        soup = BeautifulSoup(f, 'lxml-xml')
+        it_root_music_path = unquote(soup.find('key', text='Music Folder').next_sibling.text)
+        songs = soup.dict.dict.find_all('dict')
+        song_count = len(songs)
+        del(soup)
+    
+    print(f'Found {song_count:,} files in iTunes database to process.')
+    print('Starting optimized streaming parse...')
+    return it_root_music_path, songs, song_count
 
-it_root_music_path = unquote(soup.find('key', text='Music Folder').next_sibling.text)
-# example output of previous line: 'file://localhost/C:/Users/REDACTED/Music/iTunes/iTunes Music/'
-
-songs = soup.dict.dict.find_all('dict') # yields result set of media files to loop through
-
-song_count = len(songs)
-print(f'Found {song_count:,} files in Itunes database to process.')
-del(soup)
+it_root_music_path, songs, song_count = parse_itunes_xml_streaming(itdb_path)
 
 userID = determine_userID(nddb_path)
 songID_correlation = {} # we'll save this for later use to transfer Itunes playlists to ND (another script)
@@ -97,7 +95,7 @@ albums = {}
 files = {}
 
 
-status_interval = song_count // 8
+status_interval = max(1, song_count // 8)
 counter = 0
 
 conn = sqlite3.connect(nddb_path)
@@ -105,29 +103,45 @@ cur = conn.cursor()
 cur.execute('DELETE FROM annotation')
 conn.commit()
 
+# Pre-load all media file paths for faster lookup
+print('Loading Navidrome media file index...')
+cur.execute('SELECT id, path, artist_id, album_id FROM media_file')
+media_lookup = {row[1]: (row[0], row[2], row[3]) for row in cur.fetchall()}
+print(f'Loaded {len(media_lookup):,} media files from Navidrome database.')
+
 for it_song_entry in songs:
     counter += 1    # progress tracking feedback
     if counter % status_interval == 0:
         print(f'{counter:,} files parsed so far of {song_count:,} total songs.')
 
-    # chop off first part of IT path so we can correlate it to the entry in the ND database
-    
-    if it_song_entry.find('key', string='Location') == None: 
+    # Skip entries without location data
+    location_key = it_song_entry.find('key', string='Location')
+    if location_key is None: 
         continue
 
-    song_path = unquote(it_song_entry.find('key', string='Location').next_sibling.text)
+    song_path = unquote(location_key.next_sibling.text)
     if not song_path.startswith(it_root_music_path):  # excludes non-local content
         continue   
 
     song_path = re.sub(it_root_music_path, '', song_path)
+    # Normalize Unicode from decomposed (NFD) to composed (NFC) form for database matching
+    song_path = unicodedata.normalize('NFC', song_path)
 
-    try:
-        cur.execute('SELECT id, artist_id, album_id FROM media_file WHERE path LIKE "%' + song_path + '"')
-        song_id, artist_id, album_id = cur.fetchone()
-    except TypeError:
+    # Fast lookup using pre-loaded media index
+    matching_files = [info for path, info in media_lookup.items() if song_path in path]
+    if not matching_files:
         print(f"Error while parsing {song_path}. Navidrome does not acknowledge that file's existence.")
         print("Maybe Navidrome doesn't like the extension? Skipping.")
         continue
+    elif len(matching_files) > 1:
+        # If multiple matches, find exact match or best match
+        exact_match = next((info for path, info in media_lookup.items() if path.endswith(song_path)), None)
+        if exact_match:
+            song_id, artist_id, album_id = exact_match
+        else:
+            song_id, artist_id, album_id = matching_files[0]
+    else:
+        song_id, artist_id, album_id = matching_files[0]
 
 
     # correlate Itunes ID with Navidrome ID (for use in a future script)
@@ -151,15 +165,15 @@ for it_song_entry in songs:
 
     
 
-conn.close()
-
 print('Writing changes to database:')
-write_to_annotation(artists, 'artist')
+write_to_annotation(artists, 'artist', conn, cur)
 print('Done writing artist records to database.')
-write_to_annotation(files, 'media_file')
+write_to_annotation(files, 'media_file', conn, cur)
 print('Done writing music file records to database.')
-write_to_annotation(albums, 'album')
+write_to_annotation(albums, 'album', conn, cur)
 print('Album records saved to database.')
+
+conn.close()
 
 with open('IT_file_correlations.py', 'w') as f:
     f.write('# Following python dictionary correlates the itunes integer ID to the Navidrome file ID for each song.\n')
